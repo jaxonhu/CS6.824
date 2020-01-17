@@ -1,7 +1,12 @@
 package mapreduce
 
 import (
+	"bufio"
+	"encoding/json"
+	"fmt"
 	"hash/fnv"
+	"io"
+	"os"
 )
 
 func doMap(
@@ -53,6 +58,54 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+
+	// 1. read from input file
+	// 2. call mapF and get kv pair
+	// 3. calculate intermediate file name:
+	// 4. map 阶段输出不需要是json，kv即可
+	// 5。write to intermediate file
+
+	outfiles := make([]*json.Encoder, nReduce)
+
+	fin, err := os.Open(inFile)
+	if err != nil {
+		fmt.Printf("read %s error", inFile)
+		return
+	}
+	defer fin.Close()
+	fileMap := make(map[int]*os.File)
+	encoderMap := make(map[int]*json.Encoder)
+	for i := range outfiles {
+		filename := reduceName(jobName, mapTask, i)
+		file, err := os.Create(filename)
+		if err != nil {
+			fmt.Printf("%s Create file fail: %d %d", jobName, mapTask, i)
+			return
+		}
+		encoderMap[i] = json.NewEncoder(file)
+		fileMap[i] = file
+	}
+
+	br := bufio.NewReader(fin)
+	for {
+		a, _, c := br.ReadLine()
+		if c == io.EOF {
+			break
+		}
+		str := string(a[:])
+		kvs := mapF(inFile, str)
+		for _, kv := range kvs {
+			outidx := ihash(kv.Key) % nReduce
+			err := encoderMap[ihash(kv.Key) % nReduce].Encode(&kv)
+			if err != nil {
+				fmt.Printf("write output %d error: %s", outidx, err.Error())
+				return
+			}
+		}
+	}
+	for _, file := range fileMap {
+		file.Close()
+	}
 }
 
 func ihash(s string) int {
@@ -60,3 +113,4 @@ func ihash(s string) int {
 	h.Write([]byte(s))
 	return int(h.Sum32() & 0x7fffffff)
 }
+

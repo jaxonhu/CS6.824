@@ -1,6 +1,9 @@
 package mapreduce
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 //
 // schedule() starts and waits for all tasks in the given phase (mapPhase
@@ -30,5 +33,50 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	//
 	// Your code here (Part III, Part IV).
 	//
+
+	// 1. split mapFiles by ntask
+	// 2. set Mutex group
+	// 3. call
+	var mxs sync.WaitGroup
+	perSplit := int(len(mapFiles) / ntasks)
+	start := 0
+	for i := 0; i < ntasks ; i ++ {
+		mxs.Add(1)
+		end := min(len(mapFiles), i + perSplit)
+		inputFiles := mapFiles[start:end]
+		go func(taskNum int, input []string, n_other int, phase jobPhase) {
+			count := 0
+			for {
+				worker := <-registerChan
+				doTaskArgs := DoTaskArgs{
+					JobName:       jobName,
+					File:          input[count],
+					Phase:         phase,
+					TaskNumber:    taskNum,
+					NumOtherPhase: n_other,
+				}
+				ok := call(worker, "Worker.DoTask", &doTaskArgs, new(struct{}))
+				if ok {
+					if count == len(input) - 1 {
+						mxs.Done()
+						registerChan <- worker
+						break
+					}
+					count ++
+				}
+			}
+		}(i, inputFiles,n_other, phase)
+		start = end
+	}
+	mxs.Wait()
 	fmt.Printf("Schedule: %v done\n", phase)
+}
+
+func min(a int, b int) int {
+	if a < b {
+		return a
+	} else if a > b {
+		return b
+	}
+	return a
 }

@@ -62,7 +62,7 @@ func Sequential(jobName string, files []string, nreduce int,
 	reduceF func(string, []string) string,
 ) (mr *Master) {
 	mr = newMaster("master")
-	go mr.run(jobName, files, nreduce, func(phase jobPhase) {
+	go mr.run(jobName, files, nreduce, func(name string, phase jobPhase) {
 		switch phase {
 		case mapPhase:
 			for i, f := range mr.files {
@@ -106,7 +106,7 @@ func Distributed(jobName string, files []string, nreduce int, master string) (mr
 	mr = newMaster(master)
 	mr.startRPCServer()
 	go mr.run(jobName, files, nreduce,
-		func(phase jobPhase) {
+		func(name string, phase jobPhase) {
 			ch := make(chan string)
 			go mr.forwardRegistrations(ch)
 			schedule(mr.jobName, mr.files, mr.nReduce, phase, ch)
@@ -130,7 +130,7 @@ func Distributed(jobName string, files []string, nreduce int, master string) (mr
 //
 // Note that this implementation assumes a shared file system.
 func (mr *Master) run(jobName string, files []string, nreduce int,
-	schedule func(phase jobPhase),
+	schedule func(jobName string, phase jobPhase),
 	finish func(),
 ) {
 	mr.jobName = jobName
@@ -139,8 +139,8 @@ func (mr *Master) run(jobName string, files []string, nreduce int,
 
 	fmt.Printf("%s: Starting Map/Reduce task %s\n", mr.address, mr.jobName)
 
-	schedule(mapPhase)
-	schedule(reducePhase)
+	schedule(jobName, mapPhase)
+	schedule(jobName, reducePhase)
 	finish()
 	mr.merge()
 
