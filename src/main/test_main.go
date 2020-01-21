@@ -1,7 +1,7 @@
 package main
 
 import (
-	"../mapreduce"
+	"mapreduce"
 	"container/heap"
 	"fmt"
 )

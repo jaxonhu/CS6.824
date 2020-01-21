@@ -1,7 +1,7 @@
 package main
 
 import (
-	"../mapreduce"
+	"mapreduce"
 	"fmt"
 	"os"
 	"regexp"
@@ -19,21 +19,15 @@ import (
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// Your code here (Part II).
-	arrs :=strings.FieldsFunc(contents, unicode.IsSpace)
+	arrs :=strings.FieldsFunc(contents, func(c rune) bool {
+		return !unicode.IsLetter(c)
+	})
 	vector := make([]mapreduce.KeyValue, 0)
 	for _, item := range arrs {
-		word := strings.Trim(item, " ")
-		afterSplit := splitStatement(word)
-		//afterSplit = handleGenitive(afterSplit)
-		for _, w := range afterSplit {
-			if len(w) <= 1 || containsDigits(w){
-				continue
-			}
-			kv := mapreduce.KeyValue{}
-			kv.Key = w
-			kv.Value = "1"
-			vector = append(vector, kv)
-		}
+		kv := mapreduce.KeyValue{}
+		kv.Key = item
+		kv.Value = "1"
+		vector = append(vector, kv)
 	}
 	return vector
 }
