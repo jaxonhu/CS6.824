@@ -43,7 +43,7 @@ type config struct {
 	applyErr  []string // from apply channel readers
 	connected []bool   // whether each server is on the net
 	saved     []*Persister
-	endnames  [][]string    // the port file names each sends to
+	endnames  [][]string    // the port file names each sends to, sth like route table, name of route edge
 	logs      []map[int]int // copy of each server's committed entries
 	start     time.Time     // time at which make_config() was called
 	// begin()/end() statistics

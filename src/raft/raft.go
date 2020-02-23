@@ -17,7 +17,11 @@ package raft
 //   in the same server.
 //
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+	"time"
+)
 import "labrpc"
 
 // import "bytes"
@@ -54,6 +58,20 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	leaderId int				  // leader's id
+	currentTerm int				  // latest term server has seen, initialized to 0
+	votedFor int				  // candidate that received vote in current term
+	logIndex int				  // index of next log entry to be stored, initialized to 1
+	commitIndex int 			  // index of highest log entry known to be committed, initialized to 0
+	lastApplied int				  // index of highest log entry applied to state machine, initialized to 0
+	state serverState 			  // state of server
+	log []LogEntry 				  // log entries
+	nextIndex []int				  // for each server, index of the next log entry to send to that server
+	matchIndex []int              // for each server, index of highest log entry, used to track committed index
+	applyChan chan ApplyMsg 	  // apply to client
+
+	shutdown chan struct{}
+	electionTimer *time.Timer
 
 }
 
@@ -62,9 +80,9 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int
-	var isleader bool
 	// Your code here (2A).
-	return term, isleader
+	term = rf.currentTerm
+	return term, rf.state == Leader
 }
 
 
@@ -111,64 +129,6 @@ func (rf *Raft) readPersist(data []byte) {
 
 
 //
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-}
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-}
-
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
-
-//
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -183,15 +143,31 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
-
-	return index, term, isLeader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index := rf.logIndex
+	term := rf.currentTerm
+	if rf.state != Leader {
+		return -1, -1, false
+	}
+	entry := LogEntry{
+		LogIndex: index,
+		LogTerm:  term,
+		Command:  command,
+	}
+	rf.log = append(rf.log, entry)
+	rf.matchIndex[rf.me] = rf.logIndex  //
+	rf.logIndex += 1
+	go func() {
+		for follower := 0 ; follower <= len(rf.peers) ; follower ++ {
+			if follower != rf.me {
+				go rf.sendAppendEntries(follower)
+			}
+		}
+	}()
+	return index, term, true
 }
+
 
 //
 // the tester calls Kill() when a Raft instance won't
@@ -220,12 +196,221 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-
+	rf.state = Follower
+	rf.votedFor = -1
+	rf.logIndex = 1
+	rf.log =  []LogEntry{{0, 0, nil}} // log entry at index 0 is unused
+	rf.electionTimer = time.NewTimer(generateRandDuration(ElectiontTimeout))
 	// Your initialization code here (2A, 2B, 2C).
-
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
-
+	// 作为follower监听AppendEntries请求
+	go rf.accpet()
+	go func() {
+		for {
+			select {
+				case <- rf.electionTimer.C:
+					rf.campaign()
+				case <- rf.shutdown:
+					return
+			}
+		}
+	}()
 	return rf
+}
+
+func (rf *Raft) accpet() {
+	// Todo
+
+}
+
+func (rf *Raft) campaign() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state == Leader {
+		return
+	}
+	rf.state = Candidate
+	rf.leaderId = -1
+	rf.currentTerm += 1
+	rf.votedFor = rf.me
+	lastLogIndex := rf.logIndex - 1
+	lastLogTerm := rf.log[lastLogIndex].LogTerm
+	fmt.Printf("server %d begin to vote for leader\n", rf.me)
+	args := RequestVoteArgs{
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
+	}
+	electionDuration := generateRandDuration(ElectiontTimeout)
+	rf.electionTimer.Stop()
+	rf.electionTimer.Reset(electionDuration)
+	timer := time.After(electionDuration)
+
+	replyChan := make(chan RequestVoteReply, len(rf.peers) - 1)
+	//send RequestVote
+	for i := 0 ; i < len(rf.peers) ; i ++ {
+		if i != rf.me {
+			go rf.startRequest(i, args, replyChan)
+		}
+	}
+	voteCount, threshold := 0, len(rf.peers)/2
+	for voteCount < threshold {
+		select {
+		case <- rf.shutdown:
+			return
+		case <- timer: //election timeout return
+			fmt.Printf("server %d receive timeout\n", rf.me)
+			return
+		case reply := <- replyChan: // 返回投票结果
+			if reply.Err != OK {
+				go rf.startRequest(reply.Server, args, replyChan)
+			} else if reply.VoteGranted {
+				voteCount += 1
+				fmt.Printf("server %d got  a vote from %d \n", rf.me, reply.Server)
+			} else {
+				if reply.Term > rf.currentTerm {
+					rf.downToFollower(reply.Term)
+					// 转为follower后，重新开启选举周期
+					rf.electionTimer.Stop()
+					rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
+					return
+				}
+			}
+		}
+	}
+
+	//receive enough vote, success to be leader
+	if rf.state == Candidate {
+		fmt.Printf("server %d become a leader %d \n", rf.me, rf.currentTerm)
+		rf.state = Leader
+		rf.leaderId = rf.me
+		rf.initLeader()
+		go rf.heartbeats()
+	}
+}
+
+func (rf *Raft) heartbeats() {
+	timer := time.NewTimer(AppendEntriesTimeout)
+	for {
+		select {
+		case <- rf.shutdown:
+			return
+		case <- timer.C: //定时发送心跳
+			if _, isLeader := rf.GetState(); !isLeader {
+				return
+			}
+			go func() {
+				for follower := 0 ; follower < len(rf.peers) ; follower ++ {
+					if follower != rf.me {
+						//发送心跳请求
+						//Todo
+						go rf.sendAppendEntries(follower)
+					}
+				}
+			}()
+			timer.Reset(AppendEntriesTimeout)
+		}
+	}
+}
+
+func (rf *Raft) getRangeEntry(fromInclusive, toExclusive int) []LogEntry {
+	//from := rf.getOffsetIndex(fromInclusive)
+	//to := rf.getOffsetIndex(toExclusive)
+	return append([]LogEntry{}, rf.log[fromInclusive:toExclusive]...)
+}
+
+func (rf *Raft) startRequest(server int, args RequestVoteArgs, replyChan chan<- RequestVoteReply) {
+	var reply RequestVoteReply
+	end := rf.peers[server]
+	ok := end.Call("Raft.RequestVote", &args, &reply)
+	if !ok {
+		reply.Err, reply.Server =  ErrRPCFail, server
+	}
+	replyChan <- reply
+	return
+}
+
+func (rf *Raft) downToFollower(term int) {
+	rf.currentTerm = term
+	rf.state = Follower
+	rf.votedFor, rf.leaderId = -1, -1
+	//rf.persist()
+}
+
+func (rf *Raft) initLeader() {
+	rf.nextIndex, rf.matchIndex = make([]int, len(rf.peers)), make([]int, len(rf.peers))
+	for i := 0 ; i < len(rf.peers) ; i++ {
+		rf.matchIndex[i] = 0
+		rf.nextIndex[i] = rf.commitIndex + 1
+	}
+}
+
+func (rf *Raft) sendAppendEntries(follower int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.leaderId != rf.me {
+		return
+	}
+	prevLogIndex := rf.nextIndex[follower] - 1 //第一个prevLogIndex为0
+	prevLogTerm := rf.log[prevLogIndex].LogTerm
+	args := AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entries:      nil,
+		LeaderCommit: rf.commitIndex,
+		Len:          0,
+	}
+	if rf.nextIndex[follower] < rf.logIndex {
+		entries := rf.getRangeEntry(prevLogIndex+1, rf.logIndex)
+		args.Entries = entries
+		args.Len = len(entries)
+	}
+
+	var reply AppendEntriesReply
+	fmt.Printf("server %d call Raft.AppendEntries, Term= %d, LeaderId= %d, PrevLogIndex= %d, " +
+		"PrevLogTerm= %d, LeaderCommit= %d, Len= %d \n", rf.me, rf.currentTerm, rf.me, prevLogIndex,
+		prevLogTerm, rf.commitIndex, args.Len)
+	ok := rf.peers[follower].Call("Raft.AppendEntries", &args, &reply)
+	if ok {
+		if reply.Success {
+			prevLogIndex = args.PrevLogIndex
+			logEntriesLen := args.Len
+			if prevLogIndex+logEntriesLen >= rf.nextIndex[follower] { //follower成功收到后，leader更新nextIndex和matchIndex
+				rf.nextIndex[follower] = prevLogIndex + logEntriesLen + 1
+				rf.matchIndex[follower] = prevLogIndex + logEntriesLen
+			}
+			toCommitIndex := prevLogIndex + logEntriesLen
+			if rf.canCommit(toCommitIndex) {
+				rf.commitIndex = toCommitIndex
+				//rf.notifyApplyCh <- struct{}{}  Fixme
+			}
+		} else {
+			if reply.Term > rf.currentTerm {
+				rf.downToFollower(reply.Term)
+			} else {
+				// follower inconsistent Fixme
+				rf.nextIndex[follower] = reply.ConflictIndex
+			}
+		}
+	}
+}
+
+// check raft can commit log entry at index
+func (rf *Raft) canCommit(index int) bool {
+	if index < rf.logIndex && rf.commitIndex < index && rf.log[index].LogTerm == rf.currentTerm {
+		majority, count := len(rf.peers) / 2 + 1, 0
+		for i := 0 ; i < len(rf.peers) ; i ++ {
+			if rf.matchIndex[i] >= index {
+				count += 1
+			}
+			return count >= majority
+		}
+	} else {
+		return false
+	}
+	return false
 }
