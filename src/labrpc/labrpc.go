@@ -49,7 +49,10 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "labgob"
+import (
+	"fmt"
+	"labgob"
+)
 import "bytes"
 import "reflect"
 import "sync"
@@ -260,9 +263,11 @@ func (rn *Network) ProcessReq(req reqMsg) {
 
 		if replyOK == false || serverDead == true {
 			// server was killed while we were waiting; return error.
+			fmt.Printf(" server %s was killed while we were waiting; return error. \n", req.endname.(string))
 			req.replyCh <- replyMsg{false, nil}
 		} else if reliable == false && (rand.Int()%1000) < 100 {
 			// drop the reply, return as if timeout
+			fmt.Printf("server %s drop the reply, return as if timeout \n", req.endname.(string))
 			req.replyCh <- replyMsg{false, nil}
 		} else if longreordering == true && rand.Intn(900) < 600 {
 			// delay the response for a while
@@ -289,6 +294,7 @@ func (rn *Network) ProcessReq(req reqMsg) {
 			ms = (rand.Int() % 100)
 		}
 		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
+			fmt.Printf("server %s timeout \n", req.endname.(string))
 			req.replyCh <- replyMsg{false, nil}
 		})
 	}
@@ -406,6 +412,8 @@ func (rs *Server) dispatch(req reqMsg) replyMsg {
 			choices = append(choices, k)
 		}
 		log.Fatalf("labrpc.Server.dispatch(): unknown service %v in %v.%v; expecting one of %v\n",
+			serviceName, serviceName, methodName, choices)
+		fmt.Printf("labrpc.Server.dispatch(): unknown service %v in %v.%v; expecting one of %v\n",
 			serviceName, serviceName, methodName, choices)
 		return replyMsg{false, nil}
 	}

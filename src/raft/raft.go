@@ -78,11 +78,30 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	var term int
 	// Your code here (2A).
 	term = rf.currentTerm
-	return term, rf.state == Leader
+	var isLeader bool
+	var output string
+	if rf.state == Leader {
+		output = "Leader"
+	}
+	if rf.state == Follower {
+		output = "Follower"
+	}
+	if rf.state == Candidate {
+		output = "Candidate"
+	}
+	if rf.leaderId == rf.me && rf.state == Leader {
+		isLeader = true
+	} else if rf.leaderId != rf.me && rf.state != Leader {
+		isLeader = false
+	} else {
+		fmt.Printf("server %d GetState error, me= %d, leaderId= %d, state=%s \n", rf.me, rf.me, rf.leaderId, output)
+	}
+	return term, isLeader
 }
 
 
@@ -159,7 +178,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.matchIndex[rf.me] = rf.logIndex  //
 	rf.logIndex += 1
 	go func() {
-		for follower := 0 ; follower <= len(rf.peers) ; follower ++ {
+		for follower := 0 ; follower < len(rf.peers) ; follower ++ {
 			if follower != rf.me {
 				go rf.sendAppendEntries(follower)
 			}
@@ -192,6 +211,7 @@ func (rf *Raft) Kill() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -199,13 +219,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = Follower
 	rf.votedFor = -1
 	rf.logIndex = 1
+	rf.leaderId = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.shutdown = make(chan struct{})
+	rf.applyChan = applyCh
 	rf.log =  []LogEntry{{0, 0, nil}} // log entry at index 0 is unused
 	rf.electionTimer = time.NewTimer(generateRandDuration(ElectiontTimeout))
 	// Your initialization code here (2A, 2B, 2C).
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	// 作为follower监听AppendEntries请求
-	go rf.accpet()
+	//go rf.accpet()
 	go func() {
 		for {
 			select {
@@ -226,8 +251,8 @@ func (rf *Raft) accpet() {
 
 func (rf *Raft) campaign() {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if rf.state == Leader {
+		rf.mu.Unlock()
 		return
 	}
 	rf.state = Candidate
@@ -236,7 +261,8 @@ func (rf *Raft) campaign() {
 	rf.votedFor = rf.me
 	lastLogIndex := rf.logIndex - 1
 	lastLogTerm := rf.log[lastLogIndex].LogTerm
-	fmt.Printf("server %d begin to vote for leader\n", rf.me)
+	me := rf.me // 注意竞态条件
+	fmt.Printf("server %d begin to vote for leader, currentTerm= %d, currentTime= %v \n", rf.me, rf.currentTerm, time.Now().UnixNano() / 1e6)
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
@@ -247,11 +273,11 @@ func (rf *Raft) campaign() {
 	rf.electionTimer.Stop()
 	rf.electionTimer.Reset(electionDuration)
 	timer := time.After(electionDuration)
-
+	rf.mu.Unlock()
 	replyChan := make(chan RequestVoteReply, len(rf.peers) - 1)
 	//send RequestVote
 	for i := 0 ; i < len(rf.peers) ; i ++ {
-		if i != rf.me {
+		if i != me {
 			go rf.startRequest(i, args, replyChan)
 		}
 	}
@@ -268,27 +294,31 @@ func (rf *Raft) campaign() {
 				go rf.startRequest(reply.Server, args, replyChan)
 			} else if reply.VoteGranted {
 				voteCount += 1
-				fmt.Printf("server %d got  a vote from %d \n", rf.me, reply.Server)
+				fmt.Printf("server %d got  a vote from %d currentTime=%v \n", rf.me, reply.Server, time.Now().UnixNano() / 1e6)
 			} else {
+				rf.mu.Lock()
 				if reply.Term > rf.currentTerm {
 					rf.downToFollower(reply.Term)
 					// 转为follower后，重新开启选举周期
 					rf.electionTimer.Stop()
 					rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
-					return
+					//return // 必须，否则
 				}
+				rf.mu.Unlock()
 			}
 		}
 	}
-
+	rf.mu.Lock()
 	//receive enough vote, success to be leader
 	if rf.state == Candidate {
-		fmt.Printf("server %d become a leader %d \n", rf.me, rf.currentTerm)
+		fmt.Printf("server %d become a leader %d currentTime= %v\n", rf.me, rf.currentTerm, time.Now().UnixNano() / 1e6)
 		rf.state = Leader
 		rf.leaderId = rf.me
 		rf.initLeader()
 		go rf.heartbeats()
+		fmt.Printf("server %d exit heartbeats \n", rf.me)
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) heartbeats() {
@@ -302,13 +332,14 @@ func (rf *Raft) heartbeats() {
 				return
 			}
 			go func() {
+				rf.mu.Lock()
 				for follower := 0 ; follower < len(rf.peers) ; follower ++ {
 					if follower != rf.me {
 						//发送心跳请求
-						//Todo
 						go rf.sendAppendEntries(follower)
 					}
 				}
+				rf.mu.Unlock()
 			}()
 			timer.Reset(AppendEntriesTimeout)
 		}
@@ -324,9 +355,11 @@ func (rf *Raft) getRangeEntry(fromInclusive, toExclusive int) []LogEntry {
 func (rf *Raft) startRequest(server int, args RequestVoteArgs, replyChan chan<- RequestVoteReply) {
 	var reply RequestVoteReply
 	end := rf.peers[server]
+	fmt.Printf("server %d call Raft.RequestVote dst= %d, args.Term= %d, currentTime= %v \n", rf.me, server, args.Term, time.Now().UnixNano() / 1e6)
 	ok := end.Call("Raft.RequestVote", &args, &reply)
 	if !ok {
 		reply.Err, reply.Server =  ErrRPCFail, server
+		fmt.Printf("server %d call Raft.RequestVote [fail] dst= %d, args.Term= %d, currentTime= %v \n", rf.me, server, args.Term, time.Now().UnixNano() / 1e6)
 	}
 	replyChan <- reply
 	return
@@ -349,8 +382,8 @@ func (rf *Raft) initLeader() {
 
 func (rf *Raft) sendAppendEntries(follower int) {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	if rf.leaderId != rf.me {
+		rf.mu.Unlock()
 		return
 	}
 	prevLogIndex := rf.nextIndex[follower] - 1 //第一个prevLogIndex为0
@@ -369,13 +402,14 @@ func (rf *Raft) sendAppendEntries(follower int) {
 		args.Entries = entries
 		args.Len = len(entries)
 	}
-
+	rf.mu.Unlock()
 	var reply AppendEntriesReply
-	fmt.Printf("server %d call Raft.AppendEntries, Term= %d, LeaderId= %d, PrevLogIndex= %d, " +
-		"PrevLogTerm= %d, LeaderCommit= %d, Len= %d \n", rf.me, rf.currentTerm, rf.me, prevLogIndex,
-		prevLogTerm, rf.commitIndex, args.Len)
 	ok := rf.peers[follower].Call("Raft.AppendEntries", &args, &reply)
+	fmt.Printf("server %d call Raft.AppendEntries, dst= %d, Term= %d, LeaderId= %d, PrevLogIndex= %d, " +
+		"PrevLogTerm= %d, LeaderCommit= %d, Len= %d, currentTime= %v \n", rf.me, follower, rf.currentTerm, rf.leaderId, prevLogIndex,
+		prevLogTerm, rf.commitIndex, args.Len, time.Now().UnixNano() / 1e6)
 	if ok {
+		rf.mu.Lock()
 		if reply.Success {
 			prevLogIndex = args.PrevLogIndex
 			logEntriesLen := args.Len
@@ -396,6 +430,7 @@ func (rf *Raft) sendAppendEntries(follower int) {
 				rf.nextIndex[follower] = reply.ConflictIndex
 			}
 		}
+		rf.mu.Unlock()
 	}
 }
 
