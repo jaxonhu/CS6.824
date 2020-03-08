@@ -294,7 +294,6 @@ func (rn *Network) ProcessReq(req reqMsg) {
 			ms = (rand.Int() % 100)
 		}
 		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
-			fmt.Printf("server %s timeout \n", req.endname.(string))
 			req.replyCh <- replyMsg{false, nil}
 		})
 	}

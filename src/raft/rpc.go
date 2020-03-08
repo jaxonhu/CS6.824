@@ -12,9 +12,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("server %d receive RequestVote RPC from %d, argsTerm= %d, currentTerm= %d\n", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+	fmt.Printf("server %d receive RequestVote RPC from %d, argsTerm= %d, args.LastLogTerm= %d args.LastLogIndex= %d currentTerm= %d\n", rf.me, args.CandidateId, args.Term, args.LastLogTerm, args.LastLogIndex, rf.currentTerm)
 	reply.Err = OK
 	reply.Server = rf.me
+	rf.printLog()
 	if rf.currentTerm > args.Term { // 当前server term更大，直接返回false
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
@@ -27,6 +28,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.currentTerm < args.Term {
+		rf.currentTerm = args.Term
 		if rf.state != Follower { // 需要降级
 			rf.state = Follower
 			rf.electionTimer.Stop()
@@ -34,10 +36,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 	rf.leaderId = -1
-	lastLogIndex := rf.logIndex - 1
+	lastLogIndex := rf.getLastLogIndex()
 	lastLogTerm := rf.log[lastLogIndex].LogTerm
-	if lastLogTerm > args.Term ||
-		(lastLogTerm == args.Term && args.LastLogIndex < lastLogIndex) {
+	if lastLogTerm > args.LastLogTerm ||
+		(lastLogTerm == args.LastLogTerm && args.LastLogIndex < lastLogIndex) {
 		reply.VoteGranted = false
 		reply.Term = args.Term
 		fmt.Printf("4 follower %d vote false, currentTerm = %d, voted = %d, currentTime= %v \n", rf.me, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
@@ -49,6 +51,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
+	rf.persist()
 	fmt.Printf("follower %d vote success, leaderId= %d currentTerm = %d voted = %d, currentTime= %v \n", rf.me, rf.leaderId, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
 	return
 }
@@ -58,12 +61,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("server %d receive AppendEntries RPC from %d, argsTerm= %d, currentTerm= %d, currentTime= %v \n", rf.me, args.LeaderId, args.Term, rf.currentTerm, time.Now().UnixNano() / 1e6)
+	fmt.Printf("server %d receive AppendEntries RPC from %d, argsTerm= %d, argsPrevLogTerm= %d currentTerm= %d, currentTime= %v \n", rf.me, args.LeaderId, args.Term, args.PrevLogTerm, rf.currentTerm, time.Now().UnixNano() / 1e6)
+	reply.Term = rf.currentTerm
 	if rf.currentTerm > args.Term {
 		reply.Success = false
-		reply.Term = rf.currentTerm
-		fmt.Printf("server %d reply false caused by term, argsTerm= %d, serverTerm= %d\n",
-			rf.me, args.Term, rf.currentTerm)
+		fmt.Printf("server %d reply false caused by term, argsTerm= %d, serverTerm= %d currentTime= %v \n",
+			rf.me, args.Term, rf.currentTerm, time.Now().UnixNano() / 1e6)
 		return
 	}
 
@@ -78,37 +81,59 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
 	rf.state, rf.votedFor = Follower, -1
 	prevLogIndex := args.PrevLogIndex
-
-	if rf.logIndex <= prevLogIndex || rf.log[prevLogIndex].LogTerm != args.PrevLogTerm {
-		conflictIndex := Min(rf.logIndex - 1, prevLogIndex)
-		conflictTerm := rf.log[conflictIndex].LogTerm
-		for ; conflictIndex > rf.commitIndex && rf.log[conflictIndex - 1].LogTerm == conflictTerm ; conflictIndex -- {
-		}
+	lastLogIndex := rf.getLastLogIndex()
+	if lastLogIndex < prevLogIndex || rf.log[prevLogIndex].LogTerm != args.PrevLogTerm {
+		//conflictIndex := Min(rf.logIndex - 1, prevLogIndex)
+		//conflictTerm := rf.log[conflictIndex].LogTerm
+		//for ; conflictIndex > rf.commitIndex && rf.log[conflictIndex - 1].LogTerm == conflictTerm ; conflictIndex -- {
+		//}
 		reply.Success = false
+		//reply.ConflictIndex = conflictIndex
+		if lastLogIndex >= prevLogIndex {
+			fmt.Printf("follower %d reply false caused by inconsistent args.PrevLogIndex= %d lastLogIndex= %d log[prev].Term= %d currentTime= %d\n", rf.me, args.PrevLogIndex, lastLogIndex, rf.log[prevLogIndex].LogTerm, time.Now().UnixNano()/1e6)
+		} else {
+			fmt.Printf("follower %d reply false caused by lag args.PrevLogIndex= %d lastLogIndex= %d currentTime= %d\n", rf.me, args.PrevLogIndex, lastLogIndex, time.Now().UnixNano()/1e6)
+		}
+		conflictIndex := Min(lastLogIndex, prevLogIndex)
+		conflictTerm := rf.log[conflictIndex].LogTerm
+		upper := Max(rf.LastIncludedIndex, rf.commitIndex)
+		for ; conflictIndex > upper && rf.log[conflictIndex-1].LogTerm == conflictTerm ; conflictIndex -- {
+
+		}
 		reply.ConflictIndex = conflictIndex
-		fmt.Printf("follower %d reply false caused by inconsistent\n", rf.me)
 		return
 	}
 	reply.Success = true
 	reply.ConflictIndex = -1
+	fmt.Printf("follower %d reply true args.PrevLogIndex= %d lastLogIndex= %d leaderCommit= %d commitIndex= %d currentTime= %d \n", rf.me, args.PrevLogIndex, lastLogIndex, args.LeaderCommit, rf.commitIndex, time.Now().UnixNano() / 1e6)
 	i := 0
 	for ; i < args.Len; i++ {
-		if prevLogIndex+1+i >= rf.logIndex {
+		if prevLogIndex+1+i > lastLogIndex {
 			break
 		}
-		if rf.log[prevLogIndex + 1 + i].LogTerm != args.Entries[i].LogTerm {
-			rf.logIndex = prevLogIndex + 1 + i
-			rf.log = append(rf.log[:rf.logIndex]) // delete any conflicting log entries
+		if rf.log[prevLogIndex + 1 + i].LogTerm != args.Entries[i].LogTerm { // 如果从某个index开始term冲突，保留之前的，删除之后的
+			lastLogIndex = prevLogIndex + i
+			rf.log = append(rf.log[:lastLogIndex + 1]) // delete any conflicting log entries
 			break
 		}
 	}
 	for ; i < args.Len; i++ {
+		fmt.Printf("server %d append entry to its log, logTerm= %d logIndex= %d  \n", rf.me,  args.Entries[i].LogTerm, args.Entries[i].LogIndex)
 		rf.log = append(rf.log, args.Entries[i])
-		rf.logIndex += 1
 	}
 	oldCommitIndex := rf.commitIndex
-	rf.commitIndex = Max(rf.commitIndex, Min(args.LeaderCommit, args.PrevLogIndex+args.Len))
+	rf.commitIndex = Max(rf.commitIndex, Min(args.LeaderCommit, args.PrevLogIndex+args.Len)) //
+	rf.persist()
 	if rf.commitIndex > oldCommitIndex {
 		// apply
+		fmt.Printf("server %d send a notifyApply, commitIndex= %d   \n", rf.me, rf.commitIndex)
+
+		rf.notifyApply <- struct{}{}
 	}
+}
+
+func (rf * Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapShotReply) {
+
+
+
 }

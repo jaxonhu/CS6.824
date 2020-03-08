@@ -79,6 +79,20 @@ type AppendEntriesReply struct {
 	ConflictIndex int // in case of conflicting, follower include the first index it store for conflict term
 }
 
+type InstallSnapShotArgs struct {
+	Term int  					// leader's term
+	LeaderId int 				// follower redirect clients
+	LastIncludedIndex int		// the snapshot replaces all entries up through and including this index
+	LastIncludedTerm int		//
+	Offset int					// byte offset where chunk is positioned in the snapshot file
+	Data []byte					// raw bytes of the snapshot chunk, starting at offset
+	Done bool					// true if this is the last chunk
+}
+
+type InstallSnapShotReply struct {
+	Term int // currentTerm, for leader to update itself
+}
+
 const ElectiontTimeout = time.Duration(1000 * time.Millisecond)
 const AppendEntriesTimeout = time.Duration(100 * time.Millisecond)
 
