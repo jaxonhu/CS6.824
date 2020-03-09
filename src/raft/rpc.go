@@ -133,7 +133,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf * Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapShotReply) {
-
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
+	rf.leaderId = args.LeaderId
+	if args.LastIncludedIndex > rf.LastIncludedIndex {
+		truncation := args.LastIncludedIndex - rf.LastIncludedIndex
+		rf.LastIncludedIndex = args.LastIncludedIndex
+		oldCommitIndex := rf.commitIndex
+		rf.commitIndex = Max(rf.commitIndex, args.LastIncludedIndex)
+		if truncation < len(rf.log) { // 截断
+			rf.log = append(rf.log[truncation:])
+		} else { //全部丢弃
+			rf.log = []LogEntry{{args.LastIncludedIndex, args.LastIncludedTerm, nil}}
+		}
+		rf.persister.SaveStateAndSnapshot(rf.getPersistState(), args.Data) //replace service state with snapshot contents
+		if rf.commitIndex > oldCommitIndex {
+			rf.notifyApply <- struct{}{}
+		}
+	}
+	rf.electionTimer.Stop()
+	rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
+	rf.persist()
 
 }

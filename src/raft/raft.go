@@ -143,6 +143,18 @@ func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(data)
 }
 
+func (rf *Raft) getPersistState () []byte {
+	buffer := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(buffer)
+	encoder.Encode(rf.currentTerm)
+	encoder.Encode(rf.votedFor)
+	encoder.Encode(rf.LastIncludedIndex)
+	encoder.Encode(rf.commitIndex)
+	encoder.Encode(rf.lastApplied)
+	encoder.Encode(rf.log)
+	data := buffer.Bytes()
+	return data
+}
 
 //
 // restore previously persisted state.
@@ -457,6 +469,11 @@ func (rf *Raft) sendAppendEntries(follower int) {
 		rf.mu.Unlock()
 		return
 	}
+	if rf.nextIndex[follower] <= rf.LastIncludedIndex {
+		go rf.sendSnapshot(follower)
+		rf.mu.Unlock()
+		return
+	}
 	prevLogIndex := rf.nextIndex[follower] - 1 //第一个prevLogIndex为0
 	fmt.Printf("server %d sendAppendEntries dst= %d currentTime= %v prevLogIndex= %d \n", rf.me, follower, time.Now().UnixNano() / 1e6, prevLogIndex)
 	prevLogTerm := rf.log[prevLogIndex].LogTerm
@@ -506,9 +523,9 @@ func (rf *Raft) sendAppendEntries(follower int) {
 				//rf.nextIndex[follower] --
 				lastLogIndex := rf.getLastLogIndex()
 				rf.nextIndex[follower] = Max(1, Min(reply.ConflictIndex, lastLogIndex+1))
-				//if rf.nextIndex[follower] < rf.LastIncludedIndex {
-				//
-				//}
+				if rf.nextIndex[follower] < rf.LastIncludedIndex { // follower 落后太多了
+					go rf.sendSnapshot(follower)
+				}
 			}
 		}
 		rf.mu.Unlock()
@@ -520,7 +537,7 @@ func (rf *Raft) canCommit(index int) bool {
 	lastLogIndex := rf.getLastLogIndex()
 	fmt.Printf("server %d check canCommit index= %d lastLogIndex= %d commitIndex= %d log[index].logTerm= %d currentTerm= %d \n", rf.me, index, lastLogIndex, rf.commitIndex, rf.log[index].LogTerm, rf.currentTerm)
 	fmt.Println(rf.matchIndex)
-	if index <= lastLogIndex && rf.commitIndex < index && rf.log[index].LogTerm == rf.currentTerm {
+	if index <= lastLogIndex && rf.commitIndex < index && rf.log[index].LogTerm == rf.currentTerm { // 现任leader不允许提交前任leader的log
 		majority, count := len(rf.peers) / 2 + 1, 0
 		for i := 0 ; i < len(rf.peers) ; i ++ {
 			if rf.matchIndex[i] >= index {
@@ -540,14 +557,26 @@ func (rf *Raft) sendSnapshot(follower int) {
 		rf.mu.Unlock()
 		return
 	}
-	//args := InstallSnapShotArgs{
-	//	Term:              rf.currentTerm,
-	//	LeaderId:          rf.me,
-	//	LastIncludedIndex: rf.LastIncludedIndex,
-	//	LastIncludedTerm:  rf.LastIncludedTerm,
-	//	Offset:            0,
-	//	Data:              rf.persister.ReadSnapshot(),
-	//	Done:              false,
-	//}
+	args := InstallSnapShotArgs{
+		Term:              rf.currentTerm,
+		LeaderId:          rf.me,
+		LastIncludedIndex: rf.LastIncludedIndex,
+		LastIncludedTerm:  rf.LastIncludedTerm,
+		Data:              rf.persister.ReadSnapshot(),
+		Done: 			   true,
+	}
+	rf.mu.Unlock()
+	var reply InstallSnapShotReply
+	ok := rf.peers[follower].Call("Raft.InstallSnapshot", &args, &reply)
+	if ok {
+		rf.mu.Lock()
+		if reply.Term > rf.currentTerm {
+			rf.downToFollower(reply.Term)
+		} else {
+			rf.nextIndex[follower] = Max(rf.nextIndex[follower], rf.LastIncludedIndex + 1)
+			rf.matchIndex[follower] = Max(rf.nextIndex[follower], rf.LastIncludedIndex)
+		}
+		rf.mu.Unlock()
+	}
 
 }

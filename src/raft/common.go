@@ -84,7 +84,7 @@ type InstallSnapShotArgs struct {
 	LeaderId int 				// follower redirect clients
 	LastIncludedIndex int		// the snapshot replaces all entries up through and including this index
 	LastIncludedTerm int		//
-	Offset int					// byte offset where chunk is positioned in the snapshot file
+	//Offset int					// byte offset where chunk is positioned in the snapshot file
 	Data []byte					// raw bytes of the snapshot chunk, starting at offset
 	Done bool					// true if this is the last chunk
 }
