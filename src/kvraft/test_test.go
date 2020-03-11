@@ -1,6 +1,9 @@
 package raftkv
 
-import "linearizability"
+import (
+	"fmt"
+	"linearizability"
+)
 
 import "testing"
 import "strconv"
@@ -58,10 +61,10 @@ func spawn_clients_and_wait(t *testing.T, cfg *config, ncli int, fn func(me int,
 		ca[cli] = make(chan bool)
 		go run_client(t, cfg, cli, ca[cli], fn)
 	}
-	// log.Printf("spawn_clients_and_wait: waiting for clients")
+	fmt.Printf("spawn_clients_and_wait: waiting for clients \n")
 	for cli := 0; cli < ncli; cli++ {
 		ok := <-ca[cli]
-		// log.Printf("spawn_clients_and_wait: client %d is done\n", cli)
+		fmt.Printf("spawn_clients_and_wait: client %d is done \n", cli)
 		if ok == false {
 			t.Fatalf("failure")
 		}
@@ -136,6 +139,9 @@ func partitioner(t *testing.T, cfg *config, ch chan bool, done *int32) {
 			}
 		}
 		cfg.partition(pa[0], pa[1])
+		fmt.Printf("repartition : \n")
+		fmt.Println(pa[0])
+		fmt.Println(pa[1])
 		time.Sleep(electionTimeout + time.Duration(rand.Int63()%200)*time.Millisecond)
 	}
 }
@@ -188,8 +194,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 	for i := 0; i < nclients; i++ {
 		clnts[i] = make(chan int)
 	}
-	for i := 0; i < 3; i++ {
-		// log.Printf("Iteration %v\n", i)
+	for i := 0; i < 1; i++ {
+		fmt.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {
@@ -199,16 +205,17 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}()
 			last := ""
 			key := strconv.Itoa(cli)
+			fmt.Printf("%d: client new put %v currentTime= %v \n", cli, last, time.Now().UnixNano() / 1e6)
 			Put(cfg, myck, key, last)
 			for atomic.LoadInt32(&done_clients) == 0 {
 				if (rand.Int() % 1000) < 500 {
 					nv := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-					// log.Printf("%d: client new append %v\n", cli, nv)
+					fmt.Printf("%d: client new append %v currentTime= %v \n", cli, nv, time.Now().UnixNano() / 1e6)
 					Append(cfg, myck, key, nv)
 					last = NextValue(last, nv)
 					j++
 				} else {
-					// log.Printf("%d: client new get %v\n", cli, key)
+					fmt.Printf("%d: client new get %v currentTime= %v \n", cli, key, time.Now().UnixNano() / 1e6)
 					v := Get(cfg, myck, key)
 					if v != last {
 						log.Fatalf("get wrong value, key %v, wanted:\n%v\n, got\n%v\n", key, last, v)
@@ -219,11 +226,13 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 
 		if partitions {
 			// Allow the clients to perform some operations without interruption
+			fmt.Printf("begin to partition peroidly \n")
 			time.Sleep(1 * time.Second)
 			go partitioner(t, cfg, ch_partitioner, &done_partitioner)
 		}
-		time.Sleep(5 * time.Second)
 
+		time.Sleep(5 * time.Second)
+		fmt.Printf("tell all clients to quit \n")
 		atomic.StoreInt32(&done_clients, 1)     // tell clients to quit
 		atomic.StoreInt32(&done_partitioner, 1) // tell partitioner to quit
 
@@ -255,15 +264,15 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			cfg.ConnectAll()
 		}
 
-		// log.Printf("wait for clients\n")
+		fmt.Printf("wait for clients\n")
 		for i := 0; i < nclients; i++ {
-			// log.Printf("read from clients %d\n", i)
+			fmt.Printf("read from clients %d\n", i)
 			j := <-clnts[i]
 			// if j < 10 {
 			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
 			// }
 			key := strconv.Itoa(i)
-			// log.Printf("Check %v for client %d\n", j, i)
+			fmt.Printf("Check %v for client %d\n", j, i)
 			v := Get(cfg, ck, key)
 			checkClntAppends(t, i, v, j)
 		}
@@ -548,42 +557,42 @@ func TestOnePartition3A(t *testing.T) {
 	cfg.end()
 }
 
-func TestManyPartitionsOneClient3A(t *testing.T) {
+func TestManyPartitionsOneClient3A(t *testing.T) { // pass
 	// Test: partitions, one client (3A) ...
 	GenericTest(t, "3A", 1, false, false, true, -1)
 }
 
-func TestManyPartitionsManyClients3A(t *testing.T) {
+func TestManyPartitionsManyClients3A(t *testing.T) { // pass
 	// Test: partitions, many clients (3A) ...
 	GenericTest(t, "3A", 5, false, false, true, -1)
 }
 
-func TestPersistOneClient3A(t *testing.T) {
+func TestPersistOneClient3A(t *testing.T) {  //  pass
 	// Test: restarts, one client (3A) ...
 	GenericTest(t, "3A", 1, false, true, false, -1)
 }
 
-func TestPersistConcurrent3A(t *testing.T) {
+func TestPersistConcurrent3A(t *testing.T) { // pass
 	// Test: restarts, many clients (3A) ...
 	GenericTest(t, "3A", 5, false, true, false, -1)
 }
 
-func TestPersistConcurrentUnreliable3A(t *testing.T) {
+func TestPersistConcurrentUnreliable3A(t *testing.T) {  // pass
 	// Test: unreliable net, restarts, many clients (3A) ...
 	GenericTest(t, "3A", 5, true, true, false, -1)
 }
 
-func TestPersistPartition3A(t *testing.T) {
+func TestPersistPartition3A(t *testing.T) { // pass
 	// Test: restarts, partitions, many clients (3A) ...
 	GenericTest(t, "3A", 5, false, true, true, -1)
 }
 
-func TestPersistPartitionUnreliable3A(t *testing.T) {
+func TestPersistPartitionUnreliable3A(t *testing.T) { // pass
 	// Test: unreliable net, restarts, partitions, many clients (3A) ...
 	GenericTest(t, "3A", 5, true, true, true, -1)
 }
 
-func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
+func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) { // pass
 	// Test: unreliable net, restarts, partitions, linearizability checks (3A) ...
 	GenericTestLinearizability(t, "3A", 15, 7, true, true, true, -1)
 }

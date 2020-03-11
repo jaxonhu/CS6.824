@@ -1,6 +1,8 @@
 package raftkv
 
-import "labrpc"
+import (
+	"labrpc"
+)
 import "testing"
 import "os"
 
@@ -105,11 +107,11 @@ func (cfg *config) SnapshotSize() int {
 // attach server i to servers listed in to
 // caller must hold cfg.mu
 func (cfg *config) connectUnlocked(i int, to []int) {
-	// log.Printf("connect peer %d to %v\n", i, to)
-
+	fmt.Printf("connect peer %d to %v\n", i, to)
 	// outgoing socket files
 	for j := 0; j < len(to); j++ {
 		endname := cfg.endnames[i][to[j]]
+		fmt.Printf("enable endname=%s \n", endname)
 		cfg.net.Enable(endname, true)
 	}
 
