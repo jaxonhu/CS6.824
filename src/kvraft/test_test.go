@@ -603,7 +603,7 @@ func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) { // pass
 // also checks that majority discards committed log entries
 // even if minority doesn't respond.
 //
-func TestSnapshotRPC3B(t *testing.T) {
+func TestSnapshotRPC3B(t *testing.T) { // pass
 	const nservers = 3
 	maxraftstate := 1000
 	cfg := make_config(t, nservers, false, maxraftstate)
@@ -615,18 +615,20 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 	Put(cfg, ck, "a", "A")
 	check(cfg, t, ck, "a", "A")
-
+	fmt.Println("first put check pass")
 	// a bunch of puts into the majority partition.
 	cfg.partition([]int{0, 1}, []int{2})
 	{
 		ck1 := cfg.makeClient([]int{0, 1})
 		for i := 0; i < 50; i++ {
 			Put(cfg, ck1, strconv.Itoa(i), strconv.Itoa(i))
+			fmt.Printf("put operation %d \n", i)
 		}
 		time.Sleep(electionTimeout)
 		Put(cfg, ck1, "b", "B")
+		fmt.Printf("put operation end \n")
 	}
-
+	fmt.Println("first partition over")
 	// check that the majority partition has thrown away
 	// most of its log entries.
 	if cfg.LogSize() > 2*maxraftstate {
@@ -659,7 +661,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 
 // are the snapshots not too huge? 500 bytes is a generous bound for the
 // operations we're doing here.
-func TestSnapshotSize3B(t *testing.T) {
+func TestSnapshotSize3B(t *testing.T) { // pass
 	const nservers = 3
 	maxraftstate := 1000
 	maxsnapshotstate := 500
@@ -690,32 +692,32 @@ func TestSnapshotSize3B(t *testing.T) {
 	cfg.end()
 }
 
-func TestSnapshotRecover3B(t *testing.T) {
+func TestSnapshotRecover3B(t *testing.T) {  // pass
 	// Test: restarts, snapshots, one client (3B) ...
 	GenericTest(t, "3B", 1, false, true, false, 1000)
 }
 
-func TestSnapshotRecoverManyClients3B(t *testing.T) {
+func TestSnapshotRecoverManyClients3B(t *testing.T) { // pass
 	// Test: restarts, snapshots, many clients (3B) ...
 	GenericTest(t, "3B", 20, false, true, false, 1000)
 }
 
-func TestSnapshotUnreliable3B(t *testing.T) {
+func TestSnapshotUnreliable3B(t *testing.T) { // pass
 	// Test: unreliable net, snapshots, many clients (3B) ...
 	GenericTest(t, "3B", 5, true, false, false, 1000)
 }
 
-func TestSnapshotUnreliableRecover3B(t *testing.T) {
+func TestSnapshotUnreliableRecover3B(t *testing.T) { // pass
 	// Test: unreliable net, restarts, snapshots, many clients (3B) ...
 	GenericTest(t, "3B", 5, true, true, false, 1000)
 }
 
-func TestSnapshotUnreliableRecoverConcurrentPartition3B(t *testing.T) {
+func TestSnapshotUnreliableRecoverConcurrentPartition3B(t *testing.T) { // pass
 	// Test: unreliable net, restarts, partitions, snapshots, many clients (3B) ...
 	GenericTest(t, "3B", 5, true, true, true, 1000)
 }
 
-func TestSnapshotUnreliableRecoverConcurrentPartitionLinearizable3B(t *testing.T) {
+func TestSnapshotUnreliableRecoverConcurrentPartitionLinearizable3B(t *testing.T) { //pass
 	// Test: unreliable net, restarts, partitions, snapshots, linearizability checks (3B) ...
 	GenericTestLinearizability(t, "3B", 15, 7, true, true, true, 1000)
 }

@@ -64,7 +64,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 func (kv *KVServer) start(args interface{}) (Err, string) {
 	index, term, ok := kv.rf.Start(args)
-	fmt.Printf("kvserver got reply ok= %v \n", ok)
+	fmt.Printf("kvserver got reply ok= %v index= %d \n", ok, index)
 	if !ok {
 		return ErrWrongLeader, ""
 	}
@@ -125,6 +125,7 @@ func (kv *KVServer) apply(msg raft.ApplyMsg) {
 		e.Encode(kv.table)
 		e.Encode(kv.kvs)
 		snapshot := w.Bytes()
+		fmt.Printf("kvserver %d invoke PersistSaveSnapshot \n", kv.me)
 		kv.rf.PersistAndSaveSnapshot(msg.CommandIndex, snapshot)
 	}
 
