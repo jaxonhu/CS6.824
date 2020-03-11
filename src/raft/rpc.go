@@ -146,7 +146,7 @@ func (rf * Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSh
 		oldCommitIndex := rf.commitIndex
 		rf.commitIndex = Max(rf.commitIndex, args.LastIncludedIndex)
 		if truncation < len(rf.log) { // 截断
-			rf.log = append(rf.log[truncation:])
+			rf.log = append(rf.log[truncation:]) //多保留一个，相当于nil
 		} else { //全部丢弃
 			rf.log = []LogEntry{{args.LastIncludedIndex, args.LastIncludedTerm, nil}}
 		}
