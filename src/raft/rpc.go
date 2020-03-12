@@ -12,38 +12,48 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	reply.Err, reply.Server = OK, rf.me
-	if rf.currentTerm == args.Term && rf.votedFor == args.CandidateId {
-		reply.VoteGranted, reply.Term = true, rf.currentTerm
+	fmt.Printf("server %d receive RequestVote RPC from %d, argsTerm= %d, args.LastLogTerm= %d args.LastLogIndex= %d currentTerm= %d\n", rf.me, args.CandidateId, args.Term, args.LastLogTerm, args.LastLogIndex, rf.currentTerm)
+	reply.Err = OK
+	reply.Server = rf.me
+	rf.printLog()
+	if rf.currentTerm > args.Term { // 当前server term更大，直接返回false
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+		fmt.Printf("1 follower %d vote false, argsTerm = %d, currentTerm = %d, voted = %d, currentTime= %v \n", rf.me, args.Term, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
 		return
 	}
-	if rf.currentTerm > args.Term || // valid candidate
-		(rf.currentTerm == args.Term && rf.votedFor != -1) { // the server has voted in this term
-		reply.Term, reply.VoteGranted = rf.currentTerm, false
-		return
-	}
-	if args.Term > rf.currentTerm {
-		rf.currentTerm, rf.votedFor = args.Term, -1
-		if rf.state != Follower { // once server becomes follower, it has to reset electionTimer
-			rf.electionTimer.Stop()
-			rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
-			rf.state = Follower
-		}
-	}
-	rf.leaderId = -1 // other server trying to elect a new leader
-	reply.Term = args.Term
-	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
-	lastLogTerm :=rf.log[rf.getLastLogIndex()].LogTerm
-	if lastLogTerm > args.LastLogTerm || // the server has log with higher term
-		(lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) { // under same term, this server has longer index
+	if rf.currentTerm == args.Term && rf.votedFor != -1 { // 如果term相等, 且已经投过票, 返回false
+		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
 	}
-	reply.VoteGranted = true
+	if rf.currentTerm < args.Term {
+		rf.currentTerm = args.Term
+		if rf.state != Follower { // 需要降级
+			rf.state = Follower
+			rf.electionTimer.Stop()
+			rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
+		}
+	}
+	rf.leaderId = -1
+	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
+	lastLogTerm := rf.log[rf.getLastLogIndex()].LogTerm
+	if lastLogTerm > args.LastLogTerm ||
+		(lastLogTerm == args.LastLogTerm && args.LastLogIndex < lastLogIndex) {
+		reply.VoteGranted = false
+		reply.Term = args.Term
+		fmt.Printf("4 follower %d vote false, currentTerm = %d, voted = %d, currentTime= %v \n", rf.me, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
+		return
+	}
+	rf.currentTerm = args.Term
+	reply.Term = rf.currentTerm
 	rf.votedFor = args.CandidateId
+	reply.VoteGranted = true
 	rf.electionTimer.Stop()
 	rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
 	rf.persist()
+	fmt.Printf("follower %d vote success, leaderId= %d currentTerm = %d voted = %d, currentTime= %v \n", rf.me, rf.leaderId, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
+	return
 }
 
 
