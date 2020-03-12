@@ -132,15 +132,7 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
-	buffer := new(bytes.Buffer)
-	encoder := labgob.NewEncoder(buffer)
-	encoder.Encode(rf.currentTerm)
-	encoder.Encode(rf.votedFor)
-	encoder.Encode(rf.LastIncludedIndex)
-	encoder.Encode(rf.commitIndex)
-	encoder.Encode(rf.lastApplied)
-	encoder.Encode(rf.log)
-	data := buffer.Bytes()
+	data := rf.getPersistState()
 	rf.persister.SaveRaftState(data)
 }
 
@@ -294,10 +286,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go func() {
 		for {
 			select {
-				case <- rf.electionTimer.C:
-					rf.campaign()
-				case <- rf.shutdown:
-					return
+			case <- rf.electionTimer.C:
+				rf.campaign()
+			case <- rf.shutdown:
+				return
 			}
 		}
 	}()
@@ -305,33 +297,32 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) apply() {
-	// Todo
 	for {
 		select {
-			case <- rf.notifyApply:
-				var commandValid bool
-				var entries []LogEntry
-				rf.mu.Lock()
-				lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
-				fmt.Printf("server %d apply lastApplied= %d lastLogIndex= %d commitIndex= %d \n", rf.me, rf.lastApplied, lastLogIndex, rf.commitIndex)
-				if rf.lastApplied < rf.LastIncludedIndex {
-					commandValid = false
-					rf.lastApplied = rf.LastIncludedIndex
-					entries = [] LogEntry{{LogIndex: rf.LastIncludedIndex, LogTerm: rf.log[0].LogTerm, Command: "InstallSnapshot"}} // notify included snapshot to its kvserver
-				}else if rf.lastApplied <= lastLogIndex && rf.lastApplied < rf.commitIndex { // 更新本地lastApplied
-					commandValid = true
-					entries = rf.getRangeEntry(rf.lastApplied + 1, rf.commitIndex)
-					rf.lastApplied = rf.commitIndex
-				}
-				rf.persist()
-				rf.mu.Unlock()
-				for _, entry := range entries {
-					fmt.Printf("server %d apply a ApplyMsg: CommandIndex= %d CommandTerm= %d \n", rf.me, entry.LogIndex, entry.LogTerm)
-					fmt.Println(entry.Command)
-					rf.applyChan <- ApplyMsg{CommandValid: commandValid, Command:entry.Command, CommandIndex: entry.LogIndex, CommandTerm: entry.LogTerm}
-				}
-			case <- rf.shutdown:
-				return
+		case <- rf.notifyApply:
+			rf.mu.Lock()
+			var commandValid bool
+			var entries []LogEntry
+			lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
+			fmt.Printf("server %d apply lastApplied= %d lastLogIndex= %d commitIndex= %d \n", rf.me, rf.lastApplied, lastLogIndex, rf.commitIndex)
+			if rf.lastApplied < rf.LastIncludedIndex {
+				commandValid = false
+				rf.lastApplied = rf.LastIncludedIndex
+				entries = [] LogEntry{{LogIndex: rf.LastIncludedIndex, LogTerm: rf.log[0].LogTerm, Command: "InstallSnapshot"}} // notify included snapshot to its kvserver
+			}else if rf.lastApplied <= lastLogIndex && rf.lastApplied < rf.commitIndex { // 更新本地lastApplied
+				commandValid = true
+				entries = rf.getRangeEntry(rf.lastApplied + 1, rf.commitIndex)
+				rf.lastApplied = rf.commitIndex
+			}
+			rf.persist()
+			rf.mu.Unlock()
+			for _, entry := range entries {
+				fmt.Printf("server %d apply a ApplyMsg: CommandIndex= %d CommandTerm= %d \n", rf.me, entry.LogIndex, entry.LogTerm)
+				fmt.Println(entry.Command)
+				rf.applyChan <- ApplyMsg{CommandValid: commandValid, Command:entry.Command, CommandIndex: entry.LogIndex, CommandTerm: entry.LogTerm}
+			}
+		case <- rf.shutdown:
+			return
 		}
 	}
 }
@@ -356,10 +347,10 @@ func (rf *Raft) campaign() {
 	rf.leaderId = -1
 	rf.currentTerm += 1
 	rf.votedFor = rf.me
-	rf.persist()
 	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
 	lastLogTerm := rf.log[rf.getLastLogIndex()].LogTerm
 	me := rf.me // 注意竞态条件
+	rf.persist()
 	fmt.Printf("server %d begin to vote for leader, currentTerm= %d, currentTime= %v \n", rf.me, rf.currentTerm, time.Now().UnixNano() / 1e6)
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -398,8 +389,8 @@ func (rf *Raft) campaign() {
 				if reply.Term > rf.currentTerm {
 					rf.downToFollower(reply.Term)
 					// 转为follower后，重新开启选举周期
-					rf.electionTimer.Stop()
-					rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
+					//rf.electionTimer.Stop()
+					//rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
 					//return // 必须，否则
 				}
 				rf.mu.Unlock()
@@ -414,7 +405,9 @@ func (rf *Raft) campaign() {
 		rf.leaderId = rf.me
 		rf.initLeader()
 		go rf.heartbeats()
-		fmt.Printf("server %d exit heartbeats \n", rf.me)
+		go func() {
+			rf.applyChan <- ApplyMsg{CommandValid: false, CommandIndex: -1, CommandTerm: -1, Command: "NewLeader"}
+		}()
 	}
 	rf.mu.Unlock()
 }
@@ -428,13 +421,12 @@ func (rf *Raft) heartbeats() {
 			return
 		case <- rf.heartbeatTimer.C: //定时发送心跳
 			_, isLeader := rf.GetState()
-			rf.mu.Lock()
 			if !isLeader {
 				fmt.Printf("server %d change to follower, don't send heartbeat leaderId= %d currentTime= %v \n", rf.me, rf.leaderId, time.Now().UnixNano() / 1e6)
-				rf.mu.Unlock()
 				exit = true
 				return
 			}
+			rf.mu.Lock()
 			for follower := 0 ; follower < len(rf.peers) ; follower ++ {
 				if follower != rf.me {
 					//发送心跳请求
@@ -474,6 +466,8 @@ func (rf *Raft) downToFollower(term int) {
 	rf.state = Follower
 	rf.votedFor, rf.leaderId = -1, -1
 	rf.persist()
+	rf.electionTimer.Stop()
+	rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
 }
 
 func (rf *Raft) initLeader() {
@@ -501,7 +495,6 @@ func (rf *Raft) sendAppendEntries(follower int) {
 	prevLogIndex := rf.nextIndex[follower] - 1 //第一个prevLogIndex为0
 	offset := prevLogIndex - rf.LastIncludedIndex
 	prevLogTerm := rf.log[offset].LogTerm
-	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
 	fmt.Printf("server %d sendAppendEntries dst= %d  args.Term= %d args.LeaderId= %d args.PrevLogIndex= %d args.PrevLogTerm= %d LeaderCommit= %d currentTime= %v prevLogIndex= %d \n",
 		rf.me, follower, rf.currentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, time.Now().UnixNano() / 1e6, prevLogIndex)
 	args := AppendEntriesArgs{
@@ -513,7 +506,7 @@ func (rf *Raft) sendAppendEntries(follower int) {
 		LeaderCommit: rf.commitIndex,
 		Len:          0,
 	}
-
+	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
 	if rf.nextIndex[follower] <= lastLogIndex {
 		entries := rf.getRangeEntry(prevLogIndex+1, lastLogIndex)
 		args.Entries = entries
@@ -523,8 +516,8 @@ func (rf *Raft) sendAppendEntries(follower int) {
 	var reply AppendEntriesReply
 	ok := rf.peers[follower].Call("Raft.AppendEntries", &args, &reply)
 	fmt.Printf("server %d call Raft.AppendEntries, dst= %d, Term= %d, LeaderId= %d, PrevLogIndex= %d, " +
-		"PrevLogTerm= %d, LeaderCommit= %d, Len= %d, currentTime= %v  ok= %v \n", rf.me, follower, rf.currentTerm, leaderId, prevLogIndex,
-		prevLogTerm, rf.commitIndex, args.Len, time.Now().UnixNano() / 1e6, ok)
+		"PrevLogTerm= %d, LeaderCommit= %d, Len= %d, currentTime= %v  ok= %v success= %v \n", rf.me, follower, rf.currentTerm, leaderId, prevLogIndex,
+		prevLogTerm, rf.commitIndex, args.Len, time.Now().UnixNano() / 1e6, ok, reply.Success)
 	if ok {
 		rf.mu.Lock()
 		if reply.Success {
@@ -535,6 +528,7 @@ func (rf *Raft) sendAppendEntries(follower int) {
 				rf.matchIndex[follower] = prevLogIndex + logEntriesLen
 			}
 			toCommitIndex := prevLogIndex + logEntriesLen
+			fmt.Printf("server %d toCommitIndex:  prevLogIndex= %d, logEntriesLen= %d from= %d \n", rf.me, prevLogIndex, logEntriesLen, follower)
 			if rf.canCommit(toCommitIndex) {
 				rf.commitIndex = toCommitIndex
 				rf.persist()
@@ -560,6 +554,9 @@ func (rf *Raft) sendAppendEntries(follower int) {
 // check raft can commit log entry at index
 func (rf *Raft) canCommit(index int) bool {
 	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
+	if index < rf.LastIncludedIndex {
+		return false
+	}
 	fmt.Printf("server %d commitCheck index= %d lastIncludedIndex= %d commitIndex= %d \n", rf.me, index, rf.LastIncludedIndex, rf.commitIndex)
 	fmt.Printf("server %d check canCommit index= %d lastLogIndex= %d commitIndex= %d log[index].logTerm= %d currentTerm= %d \n", rf.me, index, lastLogIndex, rf.commitIndex, rf.log[index-rf.LastIncludedIndex].LogTerm, rf.currentTerm)
 	fmt.Println(rf.matchIndex)

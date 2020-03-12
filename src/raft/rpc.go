@@ -12,48 +12,38 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("server %d receive RequestVote RPC from %d, argsTerm= %d, args.LastLogTerm= %d args.LastLogIndex= %d currentTerm= %d\n", rf.me, args.CandidateId, args.Term, args.LastLogTerm, args.LastLogIndex, rf.currentTerm)
-	reply.Err = OK
-	reply.Server = rf.me
-	rf.printLog()
-	if rf.currentTerm > args.Term { // 当前server term更大，直接返回false
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
-		fmt.Printf("1 follower %d vote false, argsTerm = %d, currentTerm = %d, voted = %d, currentTime= %v \n", rf.me, args.Term, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
+	reply.Err, reply.Server = OK, rf.me
+	if rf.currentTerm == args.Term && rf.votedFor == args.CandidateId {
+		reply.VoteGranted, reply.Term = true, rf.currentTerm
 		return
 	}
-	if rf.currentTerm == args.Term && rf.votedFor != -1 { // 如果term相等, 且已经投过票, 返回false
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
+	if rf.currentTerm > args.Term || // valid candidate
+		(rf.currentTerm == args.Term && rf.votedFor != -1) { // the server has voted in this term
+		reply.Term, reply.VoteGranted = rf.currentTerm, false
 		return
 	}
-	if rf.currentTerm < args.Term {
-		rf.currentTerm = args.Term
-		if rf.state != Follower { // 需要降级
-			rf.state = Follower
+	if args.Term > rf.currentTerm {
+		rf.currentTerm, rf.votedFor = args.Term, -1
+		if rf.state != Follower { // once server becomes follower, it has to reset electionTimer
 			rf.electionTimer.Stop()
 			rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
+			rf.state = Follower
 		}
 	}
-	rf.leaderId = -1
-	lastLogIndex := rf.getLastLogIndex()
-	lastLogTerm := rf.log[lastLogIndex].LogTerm
-	if lastLogTerm > args.LastLogTerm ||
-		(lastLogTerm == args.LastLogTerm && args.LastLogIndex < lastLogIndex) {
+	rf.leaderId = -1 // other server trying to elect a new leader
+	reply.Term = args.Term
+	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
+	lastLogTerm :=rf.log[rf.getLastLogIndex()].LogTerm
+	if lastLogTerm > args.LastLogTerm || // the server has log with higher term
+		(lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) { // under same term, this server has longer index
 		reply.VoteGranted = false
-		reply.Term = args.Term
-		fmt.Printf("4 follower %d vote false, currentTerm = %d, voted = %d, currentTime= %v \n", rf.me, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
 		return
 	}
+	reply.VoteGranted = true
+	rf.votedFor = args.CandidateId
 	rf.electionTimer.Stop()
 	rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
-	rf.currentTerm = args.Term
-	reply.Term = rf.currentTerm
-	rf.votedFor = args.CandidateId
-	reply.VoteGranted = true
 	rf.persist()
-	fmt.Printf("follower %d vote success, leaderId= %d currentTerm = %d voted = %d, currentTime= %v \n", rf.me, rf.leaderId, rf.currentTerm, rf.votedFor, time.Now().UnixNano() / 1e6)
-	return
 }
 
 
@@ -81,12 +71,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.electionTimer.Reset(generateRandDuration(ElectiontTimeout))
 	rf.state, rf.votedFor = Follower, -1
 	prevLogIndex := args.PrevLogIndex
-	//offset := rf.getLastLogIndex() - rf.LastIncludedIndex
-	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
 	if prevLogIndex < rf.LastIncludedIndex {
+		fmt.Printf("server %d reply false caused by LastIncludedIndex prevLogIndex= %d, rf.LastIncludedIndex= %d \n", rf.me, prevLogIndex, rf.LastIncludedIndex)
 		reply.Success, reply.ConflictIndex = false, rf.LastIncludedIndex+1
 		return
 	}
+	lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
 	if lastLogIndex < prevLogIndex || rf.log[prevLogIndex - rf.LastIncludedIndex].LogTerm != args.PrevLogTerm {
 		reply.Success = false
 		if lastLogIndex >= prevLogIndex {
@@ -134,7 +124,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf * Raft) InstallSnapshot(args *InstallSnapShotArgs, reply *InstallSnapShotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	fmt.Printf("server %d invoke snapshot \n", rf.me)
+	fmt.Printf("server %d invoke snapshot args.LastIncludedIndex= %d rf.LastIncludedIndex= %d \n", rf.me, args.LastIncludedIndex, rf.LastIncludedIndex)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		fmt.Printf("server %d installSnapshot fail cause of term args.Term= %d currentTerm= %d", rf.me, args.Term, rf.currentTerm)
@@ -145,7 +135,7 @@ func (rf * Raft) InstallSnapshot(args *InstallSnapShotArgs, reply *InstallSnapSh
 		truncation := args.LastIncludedIndex - rf.LastIncludedIndex
 		rf.LastIncludedIndex = args.LastIncludedIndex
 		oldCommitIndex := rf.commitIndex
-		rf.commitIndex = Max(rf.commitIndex, args.LastIncludedIndex)
+		rf.commitIndex = Max(rf.commitIndex, rf.LastIncludedIndex)
 		if truncation < len(rf.log) { // 截断
 			rf.log = append(rf.log[truncation:]) //多保留一个，相当于nil
 		} else { //全部丢弃
