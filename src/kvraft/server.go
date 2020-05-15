@@ -54,12 +54,13 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	reply.Err, reply.Value = kv.start(args.copy())
+	fmt.Printf("kvserver operation %d Get start over Err= %s \n", kv.me, reply.Err)
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	reply.Err, _ = kv.start(args.copy())
-	fmt.Printf("kvserver PutAppend start over Err= %s \n", reply.Err)
+	fmt.Printf("kvserver operation %d PutAppend start over Err= %s \n", kv.me, reply.Err)
 }
 
 func (kv *KVServer) start(args interface{}) (Err, string) {
@@ -111,7 +112,6 @@ func (kv *KVServer) apply(msg raft.ApplyMsg) {
 		}
 	}
 	// 返回客户端请求结果
-	//fmt.Printf("kvserver %d got a applymsg msgCommandIndex= %d \n", kv.me, msg.CommandIndex)
 	if ch, ok := kv.notifyChanMap[msg.CommandIndex]; ok {
 		//fmt.Printf("kvserver %d reply to client \n", kv.me)
 		delete(kv.notifyChanMap, msg.CommandIndex)
@@ -159,6 +159,8 @@ func (kv *KVServer) run() {
 					fmt.Printf("msg command= %s \n", cmd)
 					if cmd == "InstallSnapshot" {
 						kv.readSnapshot()
+					} else if cmd == "NewLeader" {
+						kv.rf.Start("") // 发送一条no-op请求，让follower提交未提交的日志
 					}
 				}
 				kv.mu.Unlock()
