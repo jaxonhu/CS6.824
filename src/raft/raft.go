@@ -304,8 +304,7 @@ func (rf *Raft) apply() {
 			var commandValid bool
 			var entries []LogEntry
 			lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
-			fmt.Printf("server %d apply lastApplied= %d lastLogIndex= %d commitIndex= %d \n", rf.me, rf.lastApplied, lastLogIndex, rf.commitIndex)
-			if rf.lastApplied < rf.LastIncludedIndex {
+			if rf.lastApplied < rf.LastIncludedIndex { // apply的落后于snapshot
 				commandValid = false
 				rf.lastApplied = rf.LastIncludedIndex
 				entries = [] LogEntry{{LogIndex: rf.LastIncludedIndex, LogTerm: rf.log[0].LogTerm, Command: "InstallSnapshot"}} // notify included snapshot to its kvserver
@@ -317,8 +316,6 @@ func (rf *Raft) apply() {
 			rf.persist()
 			rf.mu.Unlock()
 			for _, entry := range entries {
-				fmt.Printf("server %d apply a ApplyMsg: CommandIndex= %d CommandTerm= %d \n", rf.me, entry.LogIndex, entry.LogTerm)
-				fmt.Println(entry.Command)
 				rf.applyChan <- ApplyMsg{CommandValid: commandValid, Command:entry.Command, CommandIndex: entry.LogIndex, CommandTerm: entry.LogTerm}
 			}
 		case <- rf.shutdown:
@@ -481,13 +478,11 @@ func (rf *Raft) initLeader() {
 
 func (rf *Raft) sendAppendEntries(follower int) {
 	rf.mu.Lock()
-	leaderId := rf.leaderId
 	if rf.leaderId != rf.me {
 		rf.mu.Unlock()
 		return
 	}
 	if rf.nextIndex[follower] <= rf.LastIncludedIndex {
-		fmt.Printf("i guess server %d stuck at here \n", rf.me)
 		go rf.sendSnapshot(follower)
 		rf.mu.Unlock()
 		return
@@ -495,8 +490,6 @@ func (rf *Raft) sendAppendEntries(follower int) {
 	prevLogIndex := rf.nextIndex[follower] - 1 //第一个prevLogIndex为0
 	offset := prevLogIndex - rf.LastIncludedIndex
 	prevLogTerm := rf.log[offset].LogTerm
-	fmt.Printf("server %d sendAppendEntries dst= %d  args.Term= %d args.LeaderId= %d args.PrevLogIndex= %d args.PrevLogTerm= %d LeaderCommit= %d currentTime= %v prevLogIndex= %d \n",
-		rf.me, follower, rf.currentTerm, rf.me, prevLogIndex, prevLogTerm, rf.commitIndex, time.Now().UnixNano() / 1e6, prevLogIndex)
 	args := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
@@ -515,9 +508,6 @@ func (rf *Raft) sendAppendEntries(follower int) {
 	rf.mu.Unlock()
 	var reply AppendEntriesReply
 	ok := rf.peers[follower].Call("Raft.AppendEntries", &args, &reply)
-	fmt.Printf("server %d call Raft.AppendEntries, dst= %d, Term= %d, LeaderId= %d, PrevLogIndex= %d, " +
-		"PrevLogTerm= %d, LeaderCommit= %d, Len= %d, currentTime= %v  ok= %v success= %v \n", rf.me, follower, rf.currentTerm, leaderId, prevLogIndex,
-		prevLogTerm, rf.commitIndex, args.Len, time.Now().UnixNano() / 1e6, ok, reply.Success)
 	if ok {
 		rf.mu.Lock()
 		if reply.Success {
@@ -528,11 +518,9 @@ func (rf *Raft) sendAppendEntries(follower int) {
 				rf.matchIndex[follower] = prevLogIndex + logEntriesLen
 			}
 			toCommitIndex := prevLogIndex + logEntriesLen
-			fmt.Printf("server %d toCommitIndex:  prevLogIndex= %d, logEntriesLen= %d from= %d \n", rf.me, prevLogIndex, logEntriesLen, follower)
 			if rf.canCommit(toCommitIndex) {
 				rf.commitIndex = toCommitIndex
 				rf.persist()
-				fmt.Printf("server %d commit log, current commitIndex= %d \n", rf.me, rf.commitIndex)
 				rf.notifyApply <- struct{}{}
 			}
 		} else {
@@ -541,8 +529,8 @@ func (rf *Raft) sendAppendEntries(follower int) {
 			} else {
 				// follower inconsistent Fixme
 				lastLogIndex := rf.log[rf.getLastLogIndex()].LogIndex
-				rf.nextIndex[follower] = Max(1, Min(reply.ConflictIndex, lastLogIndex+1))
-				if rf.nextIndex[follower] <= rf.LastIncludedIndex { // follower 落后太多了
+				rf.nextIndex[follower] = Min(reply.ConflictIndex, lastLogIndex+1)
+				if rf.nextIndex[follower] <= rf.LastIncludedIndex { // 发生conflict的时候，follower 落后太多了
 					go rf.sendSnapshot(follower)
 				}
 			}
@@ -557,9 +545,6 @@ func (rf *Raft) canCommit(index int) bool {
 	if index < rf.LastIncludedIndex {
 		return false
 	}
-	fmt.Printf("server %d commitCheck index= %d lastIncludedIndex= %d commitIndex= %d \n", rf.me, index, rf.LastIncludedIndex, rf.commitIndex)
-	fmt.Printf("server %d check canCommit index= %d lastLogIndex= %d commitIndex= %d log[index].logTerm= %d currentTerm= %d \n", rf.me, index, lastLogIndex, rf.commitIndex, rf.log[index-rf.LastIncludedIndex].LogTerm, rf.currentTerm)
-	fmt.Println(rf.matchIndex)
 	if index <= lastLogIndex && rf.commitIndex < index && rf.log[index - rf.LastIncludedIndex].LogTerm == rf.currentTerm { // 现任leader不允许提交前任leader的log
 		majority, count := len(rf.peers) / 2 + 1, 0
 		for i := 0 ; i < len(rf.peers) ; i ++ {
@@ -576,9 +561,7 @@ func (rf *Raft) canCommit(index int) bool {
 
 func (rf *Raft) sendSnapshot(follower int) {
 	rf.mu.Lock()
-	fmt.Printf("server %d  sendSnapshot \n", rf.me)
 	if rf.state != Leader || rf.leaderId != rf.me {
-		fmt.Printf("server %d cannot sendSnapshot rf.leaderId= %d  rf.State=%v \n", rf.me, rf.leaderId, rf.state)
 		rf.mu.Unlock()
 		return
 	}
@@ -594,10 +577,8 @@ func (rf *Raft) sendSnapshot(follower int) {
 	}
 	rf.mu.Unlock()
 	var reply InstallSnapShotReply
-	fmt.Printf("server %d send InstallSnapshot \n ", rf.me)
 	ok := rf.peers[follower].Call("Raft.InstallSnapshot", &args, &reply)
 	if ok {
-		fmt.Printf("server %d Raft.InstallSnapshot success \n", rf.me)
 		rf.mu.Lock()
 		if reply.Term > rf.currentTerm {
 			rf.downToFollower(reply.Term)
